@@ -173,6 +173,8 @@ cython_debug/
 [Ll]ib64
 [Ll]ocal
 [Ss]cripts
+!scripts/
+!scripts/package_release.ps1
 pyvenv.cfg
 pip-selfcheck.json
 
@@ -191,6 +193,7 @@ build/
 dist_nuitka/
 dist_nuitka_small/
 dist_nuitka_upx/
+release/
 .nuitka-cache/
 .pyinstaller-cache/
 .pyinstaller-cache-venv/
