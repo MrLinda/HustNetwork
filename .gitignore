@@ -126,7 +126,7 @@ celerybeat.pid
 
 # Environments
 .env
-.venv
+.venv/
 env/
 venv/
 ENV/
@@ -177,4 +177,25 @@ pyvenv.cfg
 pip-selfcheck.json
 
 # End of https://www.toptal.com/developers/gitignore/api/python,venv
+
+# Conda virtual environment
+.conda/
+.uv-cache/
+.uv-python/
+
+# Config file with credentials
+config.ini
+
+# Build artifacts and tool caches
+build/
+dist_nuitka/
+dist_nuitka_small/
+dist_nuitka_upx/
+.nuitka-cache/
+.pyinstaller-cache/
+.pyinstaller-cache-venv/
+
+# Executables
+*.exe
+upx.exe
 

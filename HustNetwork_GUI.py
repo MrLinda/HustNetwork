@@ -4,22 +4,163 @@
 import os
 import re
 import sys
-import stat
 import time
 import math
-import shutil
 import subprocess
+import base64
 
+import win32crypt
 import requests
 from PySide6 import QtCore, QtWidgets, QtGui
 import configparser
 import rc_icon
 
 
-def remove_readonly(func, path, _):
-    "Clear the readonly bit and reattempt the removal"
-    os.chmod(path, stat.S_IWRITE)
-    func(path)
+DEFAULT_CONFIG = {
+    'network': {
+        'username': '',
+        'password': '',
+        'ping_interval': '15',
+        'ping_dns1': '202.114.0.242',
+        'ping_dns2': '223.5.5.5',
+    },
+    'normal': {
+        'silent_start': 'False',
+        'auto_start': 'False',
+    },
+}
+
+
+def set_windows_app_id():
+    if sys.platform.lower() != 'win32':
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            'HustNetwork.GUI'
+        )
+    except Exception:
+        pass
+
+
+def encrypt_password(password):
+    """使用 Windows DPAPI 加密密码"""
+    if not password:
+        return ''
+    try:
+        encrypted = win32crypt.CryptProtectData(password.encode('utf-8'), None, None, None, None, 0)
+        return base64.b64encode(encrypted).decode('utf-8')
+    except Exception:
+        return password
+
+
+def decrypt_password(encrypted_password):
+    """使用 Windows DPAPI 解密密码"""
+    if not encrypted_password:
+        return ''
+    try:
+        decoded = base64.b64decode(encrypted_password)
+        decrypted = win32crypt.CryptUnprotectData(decoded, None, None, None, 0)
+        return decrypted[1].decode('utf-8')
+    except Exception:
+        return encrypted_password
+
+
+def get_autostart_path():
+    """获取开机自启快捷方式路径"""
+    startup_path = os.path.join(
+        os.environ['APPDATA'],
+        'Microsoft',
+        'Windows',
+        'Start Menu',
+        'Programs',
+        'Startup'
+    )
+    if is_packaged():
+        return os.path.join(startup_path, 'HustNetwork_GUI.lnk')
+    return os.path.join(startup_path, 'HustNetwork_GUI_DEV.lnk')
+
+
+def get_other_autostart_path():
+    """获取另一种运行模式的开机自启快捷方式路径"""
+    startup_path = os.path.join(
+        os.environ['APPDATA'],
+        'Microsoft',
+        'Windows',
+        'Start Menu',
+        'Programs',
+        'Startup'
+    )
+    if is_packaged():
+        return os.path.join(startup_path, 'HustNetwork_GUI_DEV.lnk')
+    return os.path.join(startup_path, 'HustNetwork_GUI.lnk')
+
+
+def is_packaged():
+    return (
+        getattr(sys, 'frozen', False)
+        or "__compiled__" in globals()
+        or os.path.splitext(sys.argv[0])[1].lower() == '.exe'
+    )
+
+
+def get_executable_path():
+    if os.path.splitext(sys.argv[0])[1].lower() == '.exe':
+        return os.path.abspath(sys.argv[0])
+    return sys.executable
+
+
+def set_autostart(enable):
+    """设置开机自启"""
+    shortcut_path = get_autostart_path()
+    
+    if enable:
+        # 创建快捷方式到启动文件夹
+        try:
+            other_shortcut_path = get_other_autostart_path()
+            if os.path.exists(other_shortcut_path):
+                os.remove(other_shortcut_path)
+
+            import win32com.client
+            shell = win32com.client.Dispatch('WScript.Shell')
+            shortcut = shell.CreateShortCut(shortcut_path)
+            
+            # 检测是否为打包后的exe
+            if is_packaged():
+                target = get_executable_path()
+                args = ''
+                working_dir = os.path.dirname(target)
+            else:
+                target = sys.executable
+                args = f'"{os.path.abspath(__file__)}"'
+                working_dir = os.path.dirname(os.path.abspath(__file__))
+            
+            shortcut.Targetpath = target
+            shortcut.Arguments = args
+            shortcut.WorkingDirectory = working_dir
+            shortcut.IconLocation = target
+            shortcut.save()
+            return True
+        except Exception as e:
+            print(f"创建开机自启失败: {e}")
+            return False
+    else:
+        # 删除启动文件夹中的快捷方式
+        try:
+            if os.path.exists(shortcut_path):
+                os.remove(shortcut_path)
+            other_shortcut_path = get_other_autostart_path()
+            if os.path.exists(other_shortcut_path):
+                os.remove(other_shortcut_path)
+            return True
+        except Exception as e:
+            print(f"删除开机自启失败: {e}")
+            return False
+
+
+def is_autostart_enabled():
+    """检查是否已设置开机自启"""
+    return os.path.exists(get_autostart_path())
 
 
 class HustNetwork(QtCore.QThread):
@@ -174,6 +315,7 @@ class HustNetworkGUI(QtWidgets.QWidget):
         super().__init__()
         self.hustNetwork = None
         self.tray_msg = None
+        self.config_path = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'config.ini')
 
         self.setWindowTitle("华科校园网认证服务")
         self.setWindowIcon(QtGui.QIcon(":/icon/network.png"))
@@ -204,8 +346,11 @@ class HustNetworkGUI(QtWidgets.QWidget):
         self.save_config.setChecked(True)
         self.silent_start = QtWidgets.QCheckBox("静默启动")
         self.silent_start.setChecked(False)
+        self.auto_start = QtWidgets.QCheckBox("开机自启")
+        self.auto_start.setChecked(is_autostart_enabled())
         self.button = QtWidgets.QPushButton("开启服务")
         self.layout.addRow(self.save_config, self.silent_start)
+        self.layout.addRow(self.auto_start)
         self.layout.addRow(self.button)
 
         if QtWidgets.QSystemTrayIcon.isSystemTrayAvailable():
@@ -213,42 +358,25 @@ class HustNetworkGUI(QtWidgets.QWidget):
             self.tray_icon.show()
 
         self.button.clicked.connect(self.daemon_toggle)
+        self.auto_start.stateChanged.connect(self._on_auto_start_changed)
 
         self.config = configparser.ConfigParser()
-        if os.path.exists("config.ini"):
-            self.config.read("config.ini")  # 读取配置文件
-            self.username.setText(self.config.get('network', 'username'))
-            self.password.setText(self.config.get('network', 'password'))
+        self.config.read_dict(DEFAULT_CONFIG)
+        if os.path.exists(self.config_path):
+            self.config.read(self.config_path)  # 读取配置文件
+            self.username.setText(self.config.get('network', 'username', fallback=''))
+            encrypted_pwd = self.config.get('network', 'password', fallback='')
+            self.password.setText(decrypt_password(encrypted_pwd))
             self.ping_interval.setText(
-                self.config.get('network', 'ping_interval'))
-            self.ping_dns1.setText(self.config.get('network', 'ping_dns1'))
-            self.ping_dns2.setText(self.config.get('network', 'ping_dns2'))
+                self.config.get('network', 'ping_interval', fallback='15'))
+            self.ping_dns1.setText(self.config.get('network', 'ping_dns1', fallback='202.114.0.242'))
+            self.ping_dns2.setText(self.config.get('network', 'ping_dns2', fallback='223.5.5.5'))
             self.silent_start.setChecked(
-                self.config.getboolean('normal', 'silent_start'))
+                self.config.getboolean('normal', 'silent_start', fallback=False))
+            self.auto_start.setChecked(
+                self.config.getboolean('normal', 'auto_start', fallback=False))
         else:
-            self.config['network'] = {
-                'username': '',
-                'password': '',
-                'ping_interval': '',
-                'ping_dns1': ''}
-            self.config['normal'] = {'silent_start': ''}
-            with open('config.ini', 'w') as f:
-                self.config.write(f)
-
-        # 删除旧的 _MEIxxxxxx 文件夹
-        cur_dir = os.path.dirname(sys.argv[0])
-        mei_dirs = {}
-        max_ctime = 0
-        for file_name in os.listdir(cur_dir):
-            if '_MEI' in file_name:
-                mei_dir = os.path.join(cur_dir, file_name)
-                if os.path.isdir(mei_dir):
-                    cur_ctime = os.path.getctime(mei_dir)
-                    mei_dirs[cur_ctime] = mei_dir
-                    max_ctime = max(max_ctime, cur_ctime)
-        for ctime in mei_dirs:
-            if ctime != max_ctime:
-                shutil.rmtree(mei_dirs[ctime], onerror=remove_readonly)
+            self.save_to_confg_file()
 
     def tray_icon_activated(self, reason: QtWidgets.QSystemTrayIcon.ActivationReason):
         # 单击、双击均显示主窗口
@@ -306,13 +434,14 @@ class HustNetworkGUI(QtWidgets.QWidget):
         if self.save_config.isChecked():
             self.config['network'] = {
                 'username': self.username.text(),
-                'password': self.password.text(),
+                'password': encrypt_password(self.password.text()),
                 'ping_interval': self.ping_interval.text(),
                 'ping_dns1': self.ping_dns1.text(),
                 'ping_dns2': self.ping_dns2.text()}
             self.config['normal'] = {
-                'silent_start': str(self.silent_start.isChecked())}
-            with open('config.ini', 'w') as f:
+                'silent_start': str(self.silent_start.isChecked()),
+                'auto_start': str(self.auto_start.isChecked())}
+            with open(self.config_path, 'w') as f:
                 self.config.write(f)
 
     def start_auth_daemon(self):
@@ -327,9 +456,17 @@ class HustNetworkGUI(QtWidgets.QWidget):
         self.hustNetwork.start()
 
     @QtCore.Slot()
+    def _on_auto_start_changed(self, state):
+        enable = state == QtCore.Qt.CheckState.Checked.value
+        set_autostart(enable)
+        self.save_to_confg_file()
+
+    @QtCore.Slot()
     def daemon_toggle(self):
         if self.hustNetwork is None:
             self.save_to_confg_file()
+            # 处理开机自启设置
+            set_autostart(self.auto_start.isChecked())
             self.set_status("认证中...")
             self.start_auth_daemon()
             self.button.setText("停止服务")
@@ -343,7 +480,15 @@ class HustNetworkGUI(QtWidgets.QWidget):
 
 
 if __name__ == "__main__":
-    app = QtWidgets.QApplication([])
+    import ctypes
+    set_windows_app_id()
+    app = QtWidgets.QApplication(sys.argv)
+    app.setWindowIcon(QtGui.QIcon(":/icon/network.png"))
+    
+    mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "HustNetwork_GUI_SingleInstance")
+    if ctypes.windll.kernel32.GetLastError() == 183:
+        QtWidgets.QMessageBox.warning(None, "华科校园网认证服务", "程序已在运行中！")
+        sys.exit(0)
 
     if not QtWidgets.QSystemTrayIcon.isSystemTrayAvailable():
         QtWidgets.QMessageBox.critical(
