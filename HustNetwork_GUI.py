@@ -81,6 +81,13 @@ def get_autostart_path():
     return os.path.join(startup_path, 'HustNetwork_GUI_DEV.lnk')
 
 
+def get_desktop_shortcut_path():
+    desktop_path = os.path.join(os.environ['USERPROFILE'], 'Desktop')
+    if is_packaged():
+        return os.path.join(desktop_path, 'HustNetwork_GUI.lnk')
+    return os.path.join(desktop_path, 'HustNetwork_GUI_DEV.lnk')
+
+
 def get_other_autostart_path():
     """获取另一种运行模式的开机自启快捷方式路径"""
     startup_path = os.path.join(
@@ -110,6 +117,27 @@ def get_executable_path():
     return sys.executable
 
 
+def create_shortcut(shortcut_path):
+    import win32com.client
+    shell = win32com.client.Dispatch('WScript.Shell')
+    shortcut = shell.CreateShortCut(shortcut_path)
+
+    if is_packaged():
+        target = get_executable_path()
+        args = ''
+        working_dir = os.path.dirname(target)
+    else:
+        target = sys.executable
+        args = f'"{os.path.abspath(__file__)}"'
+        working_dir = os.path.dirname(os.path.abspath(__file__))
+
+    shortcut.Targetpath = target
+    shortcut.Arguments = args
+    shortcut.WorkingDirectory = working_dir
+    shortcut.IconLocation = target
+    shortcut.save()
+
+
 def set_autostart(enable):
     """设置开机自启"""
     shortcut_path = get_autostart_path()
@@ -121,25 +149,7 @@ def set_autostart(enable):
             if os.path.exists(other_shortcut_path):
                 os.remove(other_shortcut_path)
 
-            import win32com.client
-            shell = win32com.client.Dispatch('WScript.Shell')
-            shortcut = shell.CreateShortCut(shortcut_path)
-            
-            # 检测是否为打包后的exe
-            if is_packaged():
-                target = get_executable_path()
-                args = ''
-                working_dir = os.path.dirname(target)
-            else:
-                target = sys.executable
-                args = f'"{os.path.abspath(__file__)}"'
-                working_dir = os.path.dirname(os.path.abspath(__file__))
-            
-            shortcut.Targetpath = target
-            shortcut.Arguments = args
-            shortcut.WorkingDirectory = working_dir
-            shortcut.IconLocation = target
-            shortcut.save()
+            create_shortcut(shortcut_path)
             return True
         except Exception as e:
             print(f"创建开机自启失败: {e}")
@@ -161,6 +171,15 @@ def set_autostart(enable):
 def is_autostart_enabled():
     """检查是否已设置开机自启"""
     return os.path.exists(get_autostart_path())
+
+
+def create_desktop_shortcut():
+    try:
+        create_shortcut(get_desktop_shortcut_path())
+        return True
+    except Exception as e:
+        print(f"创建桌面快捷方式失败: {e}")
+        return False
 
 
 class HustNetwork(QtCore.QThread):
@@ -348,9 +367,10 @@ class HustNetworkGUI(QtWidgets.QWidget):
         self.silent_start.setChecked(False)
         self.auto_start = QtWidgets.QCheckBox("开机自启")
         self.auto_start.setChecked(is_autostart_enabled())
+        self.desktop_shortcut_button = QtWidgets.QPushButton("创建快捷方式")
         self.button = QtWidgets.QPushButton("开启服务")
         self.layout.addRow(self.save_config, self.silent_start)
-        self.layout.addRow(self.auto_start)
+        self.layout.addRow(self.auto_start, self.desktop_shortcut_button)
         self.layout.addRow(self.button)
 
         if QtWidgets.QSystemTrayIcon.isSystemTrayAvailable():
@@ -359,6 +379,7 @@ class HustNetworkGUI(QtWidgets.QWidget):
 
         self.button.clicked.connect(self.daemon_toggle)
         self.auto_start.stateChanged.connect(self._on_auto_start_changed)
+        self.desktop_shortcut_button.clicked.connect(self._on_create_desktop_shortcut)
 
         self.config = configparser.ConfigParser()
         self.config.read_dict(DEFAULT_CONFIG)
@@ -460,6 +481,13 @@ class HustNetworkGUI(QtWidgets.QWidget):
         enable = state == QtCore.Qt.CheckState.Checked.value
         set_autostart(enable)
         self.save_to_confg_file()
+
+    @QtCore.Slot()
+    def _on_create_desktop_shortcut(self):
+        if create_desktop_shortcut():
+            self.tray_info("已创建桌面快捷方式")
+        else:
+            QtWidgets.QMessageBox.warning(self, "华科校园网认证服务", "创建桌面快捷方式失败")
 
     @QtCore.Slot()
     def daemon_toggle(self):
