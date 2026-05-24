@@ -8,6 +8,8 @@ import time
 import math
 import subprocess
 import base64
+import logging
+from logging.handlers import RotatingFileHandler
 
 import win32crypt
 import requests
@@ -29,6 +31,26 @@ DEFAULT_CONFIG = {
         'auto_start': 'False',
     },
 }
+
+
+def setup_logger():
+    """配置日志系统，输出到文件"""
+    log_dir = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, 'hust_network.log')
+
+    logger = logging.getLogger()
+    logger.setLevel(logging.DEBUG)
+
+    file_handler = RotatingFileHandler(log_file, maxBytes=5*1024*1024, backupCount=3, encoding='utf-8')
+    file_handler.setLevel(logging.DEBUG)
+
+    formatter = logging.Formatter('[%(asctime)s] [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    file_handler.setFormatter(formatter)
+
+    logger.addHandler(file_handler)
+
+    return logging.getLogger('HustNetwork')
 
 
 def set_windows_app_id():
@@ -150,9 +172,10 @@ def set_autostart(enable):
                 os.remove(other_shortcut_path)
 
             create_shortcut(shortcut_path)
+            logger.info("开机自启已启用")
             return True
         except Exception as e:
-            print(f"创建开机自启失败: {e}")
+            logger.error(f"创建开机自启失败: {e}", exc_info=True)
             return False
     else:
         # 删除启动文件夹中的快捷方式
@@ -162,9 +185,10 @@ def set_autostart(enable):
             other_shortcut_path = get_other_autostart_path()
             if os.path.exists(other_shortcut_path):
                 os.remove(other_shortcut_path)
+            logger.info("开机自启已禁用")
             return True
         except Exception as e:
-            print(f"删除开机自启失败: {e}")
+            logger.error(f"删除开机自启失败: {e}", exc_info=True)
             return False
 
 
@@ -176,9 +200,10 @@ def is_autostart_enabled():
 def create_desktop_shortcut():
     try:
         create_shortcut(get_desktop_shortcut_path())
+        logger.info("桌面快捷方式已创建")
         return True
     except Exception as e:
-        print(f"创建桌面快捷方式失败: {e}")
+        logger.error(f"创建桌面快捷方式失败: {e}", exc_info=True)
         return False
 
 
@@ -226,6 +251,7 @@ class HustNetwork(QtCore.QThread):
         return self._ping(self._ping_dns1) or self._ping(self._ping_dns2)
 
     def _get_auth_url(self):
+        logger.debug("获取认证URL...")
         # 通过 http 的网站进行跳转
         test_url = "http://1.1.1.1"
         response = requests.get(test_url, proxies=self._proxies)
@@ -236,6 +262,7 @@ class HustNetwork(QtCore.QThread):
         self._referer = href[0]
         self._origin = self._referer.split("/eportal/")[0]
         self._auth_url = self._origin + "/eportal/InterFace.do?method=login"
+        logger.info(f"获取认证URL成功: {self._auth_url}")
 
     def _password_encrypt(self):
         page_info_url = self._origin + "/eportal/InterFace.do?method=pageInfo"
@@ -307,24 +334,32 @@ class HustNetwork(QtCore.QThread):
         response.encoding = response.apparent_encoding
         result = response.json()
         if result["result"] == 'success':
+            logger.info("认证成功")
             self.status_signal.emit("认证成功！")
         else:
+            logger.warning(f"认证失败: {result['message']}")
             self.status_signal.emit(result["message"])
 
     def run(self):
+        logger.info("认证线程启动")
         while (True):
             try:
                 ping_status = self._check_status()
-            except Exception:
+                logger.debug(f"网络检测: DNS1={self._ping_dns1}, DNS2={self._ping_dns2}, 状态={'在线' if ping_status else '离线'}")
+            except Exception as e:
+                logger.error(f"网络检测异常: {e}", exc_info=True)
                 self.status_signal.emit("网络异常！请检查网线接口连接情况")
                 time.sleep(5)
                 continue
             if not ping_status:
                 try:
+                    logger.info("检测到离线，开始认证...")
                     self._reconnection()
-                except Exception:
+                except Exception as e:
+                    logger.error(f"认证异常: {e}", exc_info=True)
                     self.status_signal.emit("连接失败！")
             else:
+                logger.debug("网络正常，已认证")
                 self.status_signal.emit("已认证！")
             time.sleep(self._ping_interval)
 
@@ -384,6 +419,7 @@ class HustNetworkGUI(QtWidgets.QWidget):
         self.config = configparser.ConfigParser()
         self.config.read_dict(DEFAULT_CONFIG)
         if os.path.exists(self.config_path):
+            logger.info(f"加载配置文件: {self.config_path}")
             self.config.read(self.config_path)  # 读取配置文件
             self.username.setText(self.config.get('network', 'username', fallback=''))
             encrypted_pwd = self.config.get('network', 'password', fallback='')
@@ -396,7 +432,9 @@ class HustNetworkGUI(QtWidgets.QWidget):
                 self.config.getboolean('normal', 'silent_start', fallback=False))
             self.auto_start.setChecked(
                 self.config.getboolean('normal', 'auto_start', fallback=False))
+            logger.info(f"配置加载完成 - 用户: {self.config.get('network', 'username', fallback='')}, 重连间隔: {self.ping_interval.text()}s")
         else:
+            logger.info("配置文件不存在，创建默认配置")
             self.save_to_confg_file()
 
     def tray_icon_activated(self, reason: QtWidgets.QSystemTrayIcon.ActivationReason):
@@ -432,6 +470,7 @@ class HustNetworkGUI(QtWidgets.QWidget):
         if self.hustNetwork and QtWidgets.QSystemTrayIcon.isSystemTrayAvailable() and self.tray_icon.isVisible():
             self.hide()
             self.tray_info("隐藏至系统托盘")
+            logger.info("窗口关闭，隐藏至系统托盘")
             event.ignore()
 
     def changeEvent(self, event):
@@ -464,6 +503,7 @@ class HustNetworkGUI(QtWidgets.QWidget):
                 'auto_start': str(self.auto_start.isChecked())}
             with open(self.config_path, 'w') as f:
                 self.config.write(f)
+            logger.info("配置已保存")
 
     def start_auth_daemon(self):
         if self.save_config.isChecked():
@@ -496,9 +536,11 @@ class HustNetworkGUI(QtWidgets.QWidget):
             # 处理开机自启设置
             set_autostart(self.auto_start.isChecked())
             self.set_status("认证中...")
+            logger.info("用户启动服务")
             self.start_auth_daemon()
             self.button.setText("停止服务")
         else:
+            logger.info("用户停止服务")
             self.hustNetwork.terminate()
             self.hustNetwork.wait()
             del self.hustNetwork
@@ -509,25 +551,33 @@ class HustNetworkGUI(QtWidgets.QWidget):
 
 if __name__ == "__main__":
     import ctypes
+    logger = setup_logger()
+    logger.info("程序启动")
+    
     set_windows_app_id()
     app = QtWidgets.QApplication(sys.argv)
     app.setWindowIcon(QtGui.QIcon(":/icon/network.png"))
     
     mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "HustNetwork_GUI_SingleInstance")
     if ctypes.windll.kernel32.GetLastError() == 183:
+        logger.warning("检测到程序已在运行，退出")
         QtWidgets.QMessageBox.warning(None, "华科校园网认证服务", "程序已在运行中！")
         sys.exit(0)
 
     if not QtWidgets.QSystemTrayIcon.isSystemTrayAvailable():
+        logger.warning("系统托盘不可用")
         QtWidgets.QMessageBox.critical(
             None, "华科校园网认证服务", "该系统上不支持隐藏至系统托盘\n如需断线重连功能，认证完成后请勿关闭本程序")
 
     widget = HustNetworkGUI()
     widget.resize(250, 200)
     if widget.silent_start.isChecked():
+        logger.info("静默启动模式")
         widget.hide()
         widget.daemon_toggle()
     else:
         widget.show()
 
-    sys.exit(app.exec())
+    exit_code = app.exec()
+    logger.info(f"程序退出，退出码: {exit_code}")
+    sys.exit(exit_code)
