@@ -42,7 +42,7 @@ def setup_logger():
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)
 
-    file_handler = RotatingFileHandler(log_file, maxBytes=5*1024*1024, backupCount=3, encoding='utf-8')
+    file_handler = RotatingFileHandler(log_file, maxBytes=1*1024*1024, backupCount=3, encoding='utf-8')
     file_handler.setLevel(logging.DEBUG)
 
     formatter = logging.Formatter('[%(asctime)s] [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
@@ -448,11 +448,16 @@ class HustNetworkGUI(QtWidgets.QWidget):
         self.show_action = QtGui.QAction("显示", self)
         self.show_action.triggered.connect(self.showNormal)
 
+        self.log_action = QtGui.QAction("日志", self)
+        self.log_action.triggered.connect(
+            lambda: os.startfile(os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'logs'), 'explore'))
+
         self.quit_action = QtGui.QAction("退出", self)
         self.quit_action.triggered.connect(qApp.quit)
 
         self.tray_icon_menu = QtWidgets.QMenu(self)
         self.tray_icon_menu.addAction(self.show_action)
+        self.tray_icon_menu.addAction(self.log_action)
         self.tray_icon_menu.addSeparator()
         self.tray_icon_menu.addAction(self.quit_action)
 
