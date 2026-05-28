@@ -197,6 +197,7 @@ release/
 .nuitka-cache/
 .pyinstaller-cache/
 .pyinstaller-cache-venv/
+nuitka-crash-report.xml
 
 # Executables
 *.exe
