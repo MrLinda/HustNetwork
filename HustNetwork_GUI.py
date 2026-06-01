@@ -9,6 +9,7 @@ import math
 import subprocess
 import base64
 import logging
+from urllib.parse import urlparse, parse_qs
 from logging.handlers import RotatingFileHandler
 
 import win32crypt
@@ -220,7 +221,7 @@ class HustNetwork(QtCore.QThread):
             self._ping_dns2 = ping_dns2
         else:
             self._username = config.get('network', 'username')
-            self._password = config.get('network', 'password')
+            self._password = decrypt_password(config.get('network', 'password'))
             self._ping_interval = config.getint('network', 'ping_interval')
             self._ping_dns1 = config.get('network', 'ping_dns1')
             self._ping_dns2 = config.get('network', 'ping_dns2')
@@ -276,29 +277,33 @@ class HustNetwork(QtCore.QThread):
 
         self._publicKey_exponent = result["publicKeyExponent"]
         self._publicKey_modulus = result["publicKeyModulus"]
+
+        parsed = urlparse(self._referer)
+        params = parse_qs(parsed.query)
+        self._mac = params.get("mac", ["111111111"])[0]
+
         return result["passwordEncrypt"]
 
-    # 加密的模拟来源于
-    # 1. https://blog.csdn.net/Kreeda/article/details/117965385
-    # 2. https://www.cnblogs.com/himax/p/python_rsa_no_padding.html
     def _get_encrypted_password(self):
         if self._encrypted_password is None:
-            # 加上通用的 mac string
-            self._encrypted_password = self._password + ">111111111"
             e = int(self._publicKey_exponent, 16)
             m = int(self._publicKey_modulus, 16)
-            # 16进制转10进制
-            t = self._encrypted_password.encode('utf-8')
-            # 字符串逆向并转换为bytes
-            input_nr = int.from_bytes(t, byteorder='big')
-            # 将字节转化成int型数字，如果没有标明进制，看做ascii码值
-            crypt_nr = pow(input_nr, e, m)
-            # 计算x的y次方，如果z在存在，则再对结果进行取模，其结果等效于pow(x,y) %z
-            length = math.ceil(m.bit_length() / 8)
-            # 取模数的比特长度(二进制长度)，除以8将比特转为字节
-            crypt_data = crypt_nr.to_bytes(length, byteorder='big')
-            # 将密文转换为bytes存储(8字节)，返回hex(16字节)
-            self._encrypted_password = crypt_data.hex()
+            chunk_size = math.ceil(m.bit_length() / 8)
+
+            plain = (self._password + ">" + self._mac)[::-1]
+
+            cipher_blocks = []
+            for i in range(0, len(plain), chunk_size):
+                chunk = plain[i:i + chunk_size]
+                nr = 0
+                for j, ch in enumerate(chunk):
+                    nr += ord(ch) << (8 * j)
+                cipher_blocks.append(pow(nr, e, m))
+
+            self._encrypted_password = "".join(
+                block.to_bytes(chunk_size, byteorder='big').hex()
+                for block in cipher_blocks
+            )
         return self._encrypted_password
 
     def _reconnection(self):
@@ -319,7 +324,6 @@ class HustNetwork(QtCore.QThread):
         if self._password_encrypt():
             data["password"] = self._get_encrypted_password()
             data["passwordEncrypt"] = "true"
-
         # 校园网认证
         headers = {
             "Host": self._origin.split("://")[1],
