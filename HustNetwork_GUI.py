@@ -31,20 +31,31 @@ DEFAULT_CONFIG = {
         'silent_start': 'False',
         'auto_start': 'False',
     },
+    'logging': {
+        'level': 'INFO',
+    },
 }
 
 
-def setup_logger():
+LOG_LEVELS = {
+    'DEBUG': logging.DEBUG,
+    'INFO': logging.INFO,
+    'WARNING': logging.WARNING,
+    'ERROR': logging.ERROR,
+    'CRITICAL': logging.CRITICAL,
+}
+
+def setup_logger(level=logging.INFO):
     """配置日志系统，输出到文件"""
     log_dir = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'logs')
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, 'hust_network.log')
 
     logger = logging.getLogger()
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(level)
 
     file_handler = RotatingFileHandler(log_file, maxBytes=1*1024*1024, backupCount=3, encoding='utf-8')
-    file_handler.setLevel(logging.DEBUG)
+    file_handler.setLevel(level)
 
     formatter = logging.Formatter('[%(asctime)s] [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
     file_handler.setFormatter(formatter)
@@ -560,7 +571,18 @@ class HustNetworkGUI(QtWidgets.QWidget):
 
 if __name__ == "__main__":
     import ctypes
-    logger = setup_logger()
+
+    config_path = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'config.ini')
+    log_level = logging.INFO
+    if os.path.exists(config_path):
+        cfg = configparser.ConfigParser()
+        cfg.read_dict(DEFAULT_CONFIG)
+        cfg.read(config_path)
+        level_name = cfg.get('logging', 'level', fallback='INFO').upper()
+        log_level = LOG_LEVELS.get(level_name, logging.INFO)
+
+    logger = setup_logger(log_level)
+    logger.info(f"日志等级: {logging.getLevelName(log_level)}")
     logger.info("程序启动")
     
     set_windows_app_id()
